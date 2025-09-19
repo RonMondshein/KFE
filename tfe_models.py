@@ -200,7 +200,31 @@ class TFE_GNN(nn.Module):
                     h = F.relu(h)
                 h = F.dropout(h, self.drop[1], self.training)
 
-        return h
+        pen = 0.0
+        if self.training and len(h_bands) > 2:
+            lp = h_bands[0].detach()   # LP reference (no grad)
+            hp = h_bands[-1].detach()  # HP reference (no grad)
+        
+            # penalize mid bands against each other
+            for i in range(1, len(h_bands)-1):
+                for j in range(i+1, len(h_bands)-1):
+                    ci = F.normalize(h_bands[i], dim=1)
+                    cj = F.normalize(h_bands[j], dim=1)
+                    pen += (ci * cj).sum(dim=1).mean()
+        
+            # penalize mid bands against LP/HP
+            for i in range(1, len(h_bands)-1):
+                ci = F.normalize(h_bands[i], dim=1)
+        
+                # LP as reference
+                clp = F.normalize(lp, dim=1)
+                pen += (ci * clp).sum(dim=1).mean()
+        
+                # HP as reference
+                chp = F.normalize(hp, dim=1)
+                pen += (ci * chp).sum(dim=1).mean()
+
+        return h, pen
 
 class TFE_GNN_large(nn.Module):
     def __init__(self, input_dim, hidden_dim, out_dim, num_layers, dropout, activation, hop, combine):
@@ -282,4 +306,12 @@ class TFE_GNN_large(nn.Module):
         else:
             h = sum(h_bands)
 
-        return h
+        pen = 0.0
+        if self.training:
+            for i in range(len(h_bands)):
+                for j in range(i+1, len(h_bands)):
+                    ci = F.normalize(h_bands[i], dim=1)
+                    cj = F.normalize(h_bands[j], dim=1)
+                    pen = pen + (ci * cj).sum(dim=1).mean()
+
+        return h, pen

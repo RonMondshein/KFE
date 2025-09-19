@@ -18,12 +18,14 @@ from tfe_utils import propagate_adj, set_seed, accuracy, load_data, random_walk_
 _RESULT_DIR = Path("results/records")
 _RESULT_FORMAT = "jsonl"   # change to "csv" if you prefer CSV aggregation
 
-def train(model, optimizer, adj_hp, adj_lp, x, y, mask):
+def train(model, optimizer, adj_hp, adj_lp, x, y, mask, lamda=0.001):
     model.train()
     optimizer.zero_grad()
-    out = model(adj_hp, adj_lp, x)
+    out, pen = model(adj_hp, adj_lp, x)
     out = F.log_softmax(out, dim=1)
-    loss = F.cross_entropy(out[mask[0]], y[mask[0]])
+    ce_loss = F.nll_loss(out[mask[0]], y[mask[0]])
+    loss = ce_loss + pen * lamda
+    print(f"CE: {ce_loss.item():.4f}, Pen: {pen.item():.4f}, Scaled Pen: {(lamda*pen).item():.4f}\n\n")
     if args.dataset in {'citeseer'} and not args.full:
         cos_loss = consis_loss(out, 0.5, 0.9)
         (loss+cos_loss).backward()
@@ -35,11 +37,12 @@ def train(model, optimizer, adj_hp, adj_lp, x, y, mask):
 
 def test(model, adj_hp, adj_lp, x, y, mask):
     model.eval()
-    logits, accs, losses = model(adj_hp, adj_lp, x), [], []
+    out, accs, losses = model(adj_hp, adj_lp, x), [], []
+    logits, _ = out
     logits = F.log_softmax(logits, dim=1)
     for i in range(3):
         acc = accuracy(logits[mask[i]], y[mask[i]])
-        loss = F.cross_entropy(logits[mask[i]], y[mask[i]])
+        loss = F.nll_loss(logits[mask[i]], y[mask[i]])
         accs.append(acc)
         losses.append(loss)
 
@@ -97,7 +100,7 @@ def run(args, dataset, optimi, full, random_split, i):
     else:
         print("Unsupported Graph Filter Forms")
 
-
+    lamda = args.lamda if args.lamda else 0.001
     #DEBUG PRINTS
     #print(f"adj_hp dtyp is {adj_hp.dtype}")        # must be float32/float64/complex
     #print(f"adj_hp is sparse {adj_hp.is_sparse}")    # matrix_power does not support sparse tensors
@@ -141,7 +144,8 @@ def run(args, dataset, optimi, full, random_split, i):
 
             #print(f"DEBUG: midband {b + 1}, lower {lower}, upper {upper}")
             cur = torch.mm(hp_part, lp_part)  # LP^k1 * HP^k2
-            cur = cur.to_sparse()
+            row_sum_max = torch.sparse.sum(cur.abs().to_sparse(), dim=1).to_dense().max().clamp(min=1.0)
+            cur = (cur / row_sum_max).to_sparse()
             adjs.append(cur)
         adjs.append(adj_hp)                # last band is HP
     else:
@@ -155,7 +159,7 @@ def run(args, dataset, optimi, full, random_split, i):
     run_time = []
     for epoch in trange(args.epochs, desc=f'Run {i+1}'):
         t0 = time.time()
-        train(model, optimizer, adjs, None, features, labels, mask)
+        train(model, optimizer, adjs, None, features, labels, mask, lamda)
         run_time.append(time.time()-t0)
         [train_acc, val_acc, tmp_test_acc], [train_loss, val_loss, tmp_test_loss], logits = test(model, adjs, None, features, labels, mask)
         train_losses.append(train_loss.item())
@@ -219,7 +223,7 @@ parser.add_argument('--random_split', type=bool, default=True, help='Whether ran
 parser.add_argument('--combine', type=str, default='sum', help='sum, con, lp, hp')
 
 parser.add_argument('--bandwidths', type=str, default=None, help='Comma-separated per-band bandwidths given as tuples, exp for HP and exp for LP, e.g., "1,3,2,4".')
-
+parser.add_argument('--lamda', type=float, default=0.001, help='Coefficient for the regularization term.')
 
 
 args = parser.parse_args()
