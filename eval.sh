@@ -1,5 +1,6 @@
 #!/bin/bash
 
+
 mkdir -p logs results/records batches
 chmod +x slurm/array.sh slurm/worker.sbatch
 
